@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Morphing Demo</title>
+    <link rel="stylesheet" href="main.css">
+    <script src="libs/jl_matrix_min.js"></script>
+    <script src="js/morphing-system.js"></script>
+</head>
+<body>
+    <canvas id="mainCanvas"></canvas>
+    <div id="controls">
+        <div class="control-group">
+            <label>Voice Control:</label>
+            <button id="startVoice">Start Voice Input</button>
+            <button id="stopVoice">Stop Voice Input</button>
+        </div>
+        <div class="control-group">
+            <label>Morphing Shapes:</label>
+            <button class="morph-button active" data-shape="default">Default</button>
+            <button class="morph-button" data-shape="cat">Cat</button>
+            <button class="morph-button" data-shape="car">Car</button>
+            <button class="morph-button" data-shape="person">Person</button>
+        </div>
+        <div class="control-group">
+            <label>Voice Sensitivity:</label>
+            <input type="range" id="voiceSensitivity" min="0.1" max="2.0" step="0.1" value="1.0">
+            <span id="sensitivityValue">1.0</span>
+        </div>
+        <div id="voiceStatus" class="status-not-listening">Voice Input: Disabled</div>
+        <div id="voiceVisualizer"></div>
+    </div>
+    <div id="info">
+        <strong>Voice-Modulated Morphing Character</strong><br><br>
+        <strong>How to use:</strong><br>
+        1. Click "Start Voice Input" and allow microphone access<br>
+        2. Speak to see the morph respond to your voice<br>
+        3. Click different shape buttons to morph between forms<br>
+        4. Adjust sensitivity to control voice response intensity<br><br>
+        <strong>Features:</strong><br>
+        • Real-time voice analysis<br>
+        • Shape morphing (Cat, Car, Person)<br>
+        • Voice-modulated animations<br>
+        • Interactive controls
+    </div>
+</body>
+</html> 

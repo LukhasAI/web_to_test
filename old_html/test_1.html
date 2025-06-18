@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice-Modulated Morphing Character</title>
+
+    <script src='jl_matrix_min.js'></script>
+    <script src='build.js'></script>
+    <script src='webgl-hook.js'></script>
+    <script src='vertex-modifier.js'></script>
+    <script src='simple-voice-morph.js'></script>
+
+    <link rel="stylesheet" href='main.css'/>
+    <link href="https://fonts.googleapis.com/css?family=Work+Sans:800" rel="stylesheet"> 
+    <!-- font-family: 'Work Sans', sans-serif; -->
+
+    <style>
+        * {
+            margin: 0;
+        }
+        
+        #controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            color: white;
+            font-family: 'Work Sans', sans-serif;
+            max-width: 300px;
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        .control-group button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 5px;
+        }
+        
+        .control-group button:hover {
+            background: #45a049;
+        }
+        
+        .control-group button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .morph-button {
+            background: #2196F3 !important;
+        }
+        
+        .morph-button:hover {
+            background: #1976D2 !important;
+        }
+        
+        .morph-button.active {
+            background: #FF5722 !important;
+        }
+        
+        #voiceStatus {
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            text-align: center;
+        }
+        
+        .status-listening {
+            background: #4CAF50;
+        }
+        
+        .status-not-listening {
+            background: #f44336;
+        }
+        
+        #voiceVisualizer {
+            width: 100%;
+            height: 60px;
+            background: #333;
+            border-radius: 5px;
+            margin-top: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .voice-bar {
+            position: absolute;
+            bottom: 0;
+            width: 4px;
+            background: #4CAF50;
+            border-radius: 2px 2px 0 0;
+            transition: height 0.1s ease;
+        }
+        
+        #info {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            font-family: 'Work Sans', sans-serif;
+            font-size: 12px;
+            max-width: 250px;
+        }
+        
+        #debug {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            font-family: monospace;
+            font-size: 12px;
+            max-width: 200px;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="mainCanvas"> </canvas>
+    
+    <div id="controls">
+        <div class="control-group">
+            <label>Voice Control:</label>
+            <button id="startVoice">Start Voice Input</button>
+            <button id="stopVoice">Stop Voice Input</button>
+        </div>
+        
+        <div class="control-group">
+            <label>Morphing Shapes:</label>
+            <button class="morph-button active" data-shape="default">Default</button>
+            <button class="morph-button" data-shape="cat">Cat</button>
+            <button class="morph-button" data-shape="car">Car</button>
+            <button class="morph-button" data-shape="person">Person</button>
+        </div>
+        
+        <div class="control-group">
+            <label>Voice Sensitivity:</label>
+            <input type="range" id="voiceSensitivity" min="0.1" max="2.0" step="0.1" value="1.0">
+            <span id="sensitivityValue">1.0</span>
+        </div>
+        
+        <div id="voiceStatus" class="status-not-listening">
+            Voice Input: Disabled
+        </div>
+        
+        <div id="voiceVisualizer">
+            <!-- Voice bars will be generated here -->
+        </div>
+    </div>
+    
+    <div id="info">
+        <strong>Voice-Modulated Morphing Character</strong><br><br>
+        <strong>How to use:</strong><br>
+        1. Click "Start Voice Input" and allow microphone access<br>
+        2. Speak to see the morph respond to your voice<br>
+        3. Click different shape buttons to morph between forms<br>
+        4. Adjust sensitivity to control voice response intensity<br><br>
+        <strong>Features:</strong><br>
+        • Real-time voice analysis<br>
+        • Shape morphing (Cat, Car, Person)<br>
+        • Voice-modulated animations<br>
+        • Interactive controls
+    </div>
+    
+    <div id="debug">
+        <strong>Debug Info:</strong><br>
+        <div id="debugInfo">Loading...</div>
+    </div>
+
+    <script>
+        // Debug information display
+        function updateDebugInfo() {
+            const debugInfo = document.getElementById('debugInfo');
+            if (debugInfo) {
+                let info = '';
+                
+                if (window.simpleVoiceMorph) {
+                    const morph = window.simpleVoiceMorph;
+                    info += `Voice: ${morph.isListening ? 'ON' : 'OFF'}<br>`;
+                    info += `Intensity: ${Math.round(morph.morphIntensity)}<br>`;
+                    info += `Freq: ${Math.round(morph.morphFrequency)}<br>`;
+                }
+                
+                if (window.webglHook) {
+                    const hook = window.webglHook;
+                    info += `Shape: ${hook.currentShape}<br>`;
+                    info += `Target: ${hook.targetShape}<br>`;
+                    info += `Progress: ${Math.round(hook.morphProgress * 100)}%<br>`;
+                }
+                
+                if (window.vertexModifier) {
+                    const vm = window.vertexModifier;
+                    info += `VM Shape: ${vm.currentShape}<br>`;
+                    info += `Buffers: ${vm.originalBuffers.size}<br>`;
+                }
+                
+                debugInfo.innerHTML = info || 'Loading...';
+            }
+        }
+        
+        // Update debug info every 100ms
+        setInterval(updateDebugInfo, 100);
+    </script>
+
+</body>
+</html>

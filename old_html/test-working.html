@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Working Voice Morph Test</title>
+    <style>
+        body { margin: 0; background: #000; }
+        canvas { display: block; }
+        #controls { position: fixed; top: 20px; left: 20px; background: rgba(0,0,0,0.8); color: white; padding: 20px; }
+        button { margin: 5px; padding: 10px; }
+        .active { background: #ff5722 !important; }
+        #error { color: red; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="controls">
+        <button id="startVoice">Start Voice</button>
+        <button id="stopVoice">Stop Voice</button>
+        <br>
+        <button class="shape-btn active" data-shape="default">Default</button>
+        <button class="shape-btn" data-shape="cat">Cat</button>
+        <button class="shape-btn" data-shape="car">Car</button>
+        <button class="shape-btn" data-shape="person">Person</button>
+        <br>
+        <div id="status">Voice: Disabled</div>
+        <div id="error"></div>
+    </div>
+
+    <script>
+        // Simple working voice morph system
+        class VoiceMorph {
+            constructor() {
+                this.canvas = document.getElementById('canvas');
+                this.gl = this.canvas.getContext('webgl') || this.canvas.getContext('experimental-webgl');
+                
+                if (!this.gl) {
+                    document.getElementById('error').textContent = 'WebGL not supported!';
+                    return;
+                }
+                
+                this.voiceData = { intensity: 0, frequency: 0 };
+                this.currentShape = 'default';
+                this.time = 0;
+                
+                this.setupCanvas();
+                if (this.createShaders()) {
+                    this.createGeometry();
+                    this.setupControls();
+                    this.startRender();
+                }
+            }
+            
+            setupCanvas() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+                this.gl.enable(this.gl.DEPTH_TEST);
+                this.gl.clearColor(0.1, 0.1, 0.1, 1);
+            }
+            
+            createShaders() {
+                const vertexShaderSource = `
+                    precision mediump float;
+                    attribute vec3 position;
+                    uniform mat4 modelViewMatrix;
+                    uniform mat4 projectionMatrix;
+                    uniform float time;
+                    uniform float voiceIntensity;
+                    uniform float currentShape;
+                    uniform float morphProgress;
+                    varying float vSize;
+                    varying vec3 vColor;
+                    
+                    // Morphing function for each shape
+                    vec3 morphTarget(vec3 base, float shape, float intensity) {
+                        vec3 pos = base;
+                        if (shape > 0.5) {
+                            if (shape < 1.5) {
+                                // Cat
+                                if (pos.y > 0.7) {
+                                    pos.x *= 0.85;
+                                    pos.z *= 0.85;
+                                    pos.y *= 1.18 + 0.10 * intensity;
+                                }
+                                if (abs(pos.y) < 0.3) {
+                                    pos.x *= 1.10;
+                                    pos.z *= 1.10;
+                                }
+                                if (pos.y < -0.7) {
+                                    pos.x *= 0.85;
+                                    pos.z *= 0.85;
+                                    pos.y *= 1.10;
+                                }
+                            } else if (shape < 2.5) {
+                                // Car
+                                if (abs(pos.y) < 0.4) { pos.x *= 1.5; pos.z *= 1.2; pos.y *= 0.7; }
+                            } else if (shape < 3.5) {
+                                // Person
+                                if (pos.y > 0.6) pos.y *= 1.12;
+                                if (abs(pos.y) < 0.3) pos.y *= 1.18;
+                            }
+                        }
+                        return pos;
+                    }
+                    void main() {
+                        float cappedIntensity = min(voiceIntensity, 1.0);
+                        float scale = 1.0 + cappedIntensity * 0.35;
+                        vec3 base = position * scale;
+                        vec3 target = morphTarget(base, currentShape, cappedIntensity);
+                        vec3 morphed = mix(base, target, morphProgress);
+                        // Add subtle random jitter for organic feel
+                        float jitter = (fract(sin(dot(morphed.xyz, vec3(12.9898,78.233,45.164))) * 43758.5453 + time) - 0.5) * 0.08 * cappedIntensity;
+                        morphed += jitter;
+                        vSize = 6.0 + 12.0 * cappedIntensity;
+                        if (currentShape < 1.5) vColor = vec3(1.0, 0.6, 0.2);
+                        else if (currentShape < 2.5) vColor = vec3(0.8, 0.2, 0.2);
+                        else if (currentShape < 3.5) vColor = vec3(0.2, 0.6, 1.0);
+                        else vColor = vec3(0.2, 0.8, 0.4);
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(morphed, 1.0);
+                        gl_PointSize = vSize / gl_Position.w;
+                    }
+                `;
+                
+                const fragmentShaderSource = `
+                    precision mediump float;
+                    varying float vSize;
+                    varying vec3 vColor;
+                    void main() {
+                        float dist = length(gl_PointCoord - vec2(0.5));
+                        float alpha = smoothstep(0.5, 0.2, dist);
+                        gl_FragColor = vec4(vColor, alpha);
+                    }
+                `;
+                
+                const vertexShader = this.createShader(this.gl.VERTEX_SHADER, vertexShaderSource);
+                const fragmentShader = this.createShader(this.gl.FRAGMENT_SHADER, fragmentShaderSource);
+                
+                if (!vertexShader || !fragmentShader) {
+                    return false;
+                }
+                
+                this.program = this.createProgram(vertexShader, fragmentShader);
+                if (!this.program) {
+                    return false;
+                }
+                
+                this.gl.useProgram(this.program);
+                
+                // Get uniform locations
+                this.uniforms = {
+                    modelViewMatrix: this.gl.getUniformLocation(this.program, 'modelViewMatrix'),
+                    projectionMatrix: this.gl.getUniformLocation(this.program, 'projectionMatrix'),
+                    time: this.gl.getUniformLocation(this.program, 'time'),
+                    voiceIntensity: this.gl.getUniformLocation(this.program, 'voiceIntensity'),
+                    currentShape: this.gl.getUniformLocation(this.program, 'currentShape'),
+                    morphProgress: this.gl.getUniformLocation(this.program, 'morphProgress')
+                };
+                
+                return true;
+            }
+            
+            createShader(type, source) {
+                const shader = this.gl.createShader(type);
+                this.gl.shaderSource(shader, source);
+                this.gl.compileShader(shader);
+                
+                if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+                    const error = this.gl.getShaderInfoLog(shader);
+                    console.error('Shader compilation error:', error);
+                    document.getElementById('error').textContent = 'Shader error: ' + error;
+                    this.gl.deleteShader(shader);
+                    return null;
+                }
+                
+                return shader;
+            }
+            
+            createProgram(vertexShader, fragmentShader) {
+                const program = this.gl.createProgram();
+                this.gl.attachShader(program, vertexShader);
+                this.gl.attachShader(program, fragmentShader);
+                this.gl.linkProgram(program);
+                
+                if (!this.gl.getProgramParameter(program, this.gl.LINK_STATUS)) {
+                    const error = this.gl.getProgramInfoLog(program);
+                    console.error('Program linking error:', error);
+                    document.getElementById('error').textContent = 'Program error: ' + error;
+                    this.gl.deleteProgram(program);
+                    return null;
+                }
+                
+                return program;
+            }
+            
+            createGeometry() {
+                // Create a dense sphere of points
+                const vertices = [];
+                const basePositions = [];
+                const radius = 2.0;
+                const segments = 64;
+                const rings = 64;
+                for (let ring = 0; ring <= rings; ring++) {
+                    const phi = (ring / rings) * Math.PI;
+                    for (let segment = 0; segment <= segments; segment++) {
+                        const theta = (segment / segments) * 2 * Math.PI;
+                        const x = radius * Math.sin(phi) * Math.cos(theta);
+                        const y = radius * Math.cos(phi);
+                        const z = radius * Math.sin(phi) * Math.sin(theta);
+                        vertices.push(x, y, z);
+                        basePositions.push(x, y, z);
+                    }
+                }
+                this.vertexCount = vertices.length / 3;
+                this.basePositions = new Float32Array(basePositions);
+                this.vertexBuffer = this.gl.createBuffer();
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.vertexBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(vertices), this.gl.STATIC_DRAW);
+                const positionLocation = this.gl.getAttribLocation(this.program, 'position');
+                this.gl.enableVertexAttribArray(positionLocation);
+                this.gl.vertexAttribPointer(positionLocation, 3, this.gl.FLOAT, false, 0, 0);
+            }
+            
+            setupControls() {
+                document.getElementById('startVoice').onclick = () => this.startVoice();
+                document.getElementById('stopVoice').onclick = () => this.stopVoice();
+                
+                document.querySelectorAll('.shape-btn').forEach(btn => {
+                    btn.onclick = (e) => {
+                        document.querySelectorAll('.shape-btn').forEach(b => b.classList.remove('active'));
+                        e.target.classList.add('active');
+                        this.setMorphShape(e.target.dataset.shape);
+                    };
+                });
+            }
+            
+            async startVoice() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    const audioContext = new AudioContext();
+                    const source = audioContext.createMediaStreamSource(stream);
+                    const analyser = audioContext.createAnalyser();
+                    
+                    source.connect(analyser);
+                    analyser.fftSize = 256;
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    
+                    const analyze = () => {
+                        analyser.getByteFrequencyData(dataArray);
+                        
+                        let sum = 0;
+                        for (let i = 0; i < dataArray.length; i++) {
+                            sum += dataArray[i];
+                        }
+                        
+                        this.voiceData.intensity = sum / dataArray.length;
+                        this.voiceData.frequency = this.voiceData.intensity * 100;
+                        
+                        document.getElementById('status').textContent = `Voice: ${Math.round(this.voiceData.intensity)}`;
+                        
+                        if (this.isListening) {
+                            requestAnimationFrame(analyze);
+                        }
+                    };
+                    
+                    this.isListening = true;
+                    analyze();
+                    
+                } catch (error) {
+                    document.getElementById('error').textContent = 'Microphone access denied: ' + error.message;
+                }
+            }
+            
+            stopVoice() {
+                this.isListening = false;
+                this.voiceData.intensity = 0;
+                this.voiceData.frequency = 0;
+                document.getElementById('status').textContent = 'Voice: Disabled';
+            }
+            
+            startRender() {
+                const render = () => {
+                    this.time += 0.016;
+                    // Animate morph progress
+                    if (this.morphAnimating) {
+                        this.morphProgress += 0.03;
+                        if (this.morphProgress >= 1.0) {
+                            this.morphProgress = 1.0;
+                            this.morphAnimating = false;
+                        }
+                    }
+                    this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
+                    const aspect = this.canvas.width / this.canvas.height;
+                    const projectionMatrix = this.perspective(45 * Math.PI / 180, aspect, 0.1, 100);
+                    const modelViewMatrix = this.createModelViewMatrix();
+                    this.gl.uniformMatrix4fv(this.uniforms.projectionMatrix, false, projectionMatrix);
+                    this.gl.uniformMatrix4fv(this.uniforms.modelViewMatrix, false, modelViewMatrix);
+                    this.gl.uniform1f(this.uniforms.time, this.time);
+                    this.gl.uniform1f(this.uniforms.voiceIntensity, Math.min(this.voiceData.intensity / 64.0, 1.0));
+                    this.gl.uniform1f(this.uniforms.currentShape, this.getShapeValue(this.morphTarget));
+                    this.gl.uniform1f(this.uniforms.morphProgress, this.morphProgress);
+                    this.gl.enable(this.gl.BLEND);
+                    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE);
+                    this.gl.drawArrays(this.gl.POINTS, 0, this.vertexCount);
+                    requestAnimationFrame(render);
+                };
+                render();
+            }
+            
+            createModelViewMatrix() {
+                // Create rotation matrices
+                const rotationY = this.rotateY(this.time * 0.5);
+                const rotationX = this.rotateX(this.time * 0.3);
+                // Start with translation
+                const translation = this.translate(0, 0, -8);
+                // Multiply in the correct order: rotationY * rotationX * translation
+                let result = this.multiplyMatrices(rotationY, rotationX);
+                result = this.multiplyMatrices(result, translation);
+                return result;
+            }
+            
+            getShapeValue(shape) {
+                const map = { 'default': 0, 'cat': 1, 'car': 2, 'person': 3 };
+                return map[shape] || 0;
+            }
+            
+            // Matrix utilities
+            perspective(fov, aspect, near, far) {
+                const f = Math.tan(Math.PI * 0.5 - 0.5 * fov);
+                const rangeInv = 1.0 / (near - far);
+                return new Float32Array([
+                    f / aspect, 0, 0, 0,
+                    0, f, 0, 0,
+                    0, 0, (near + far) * rangeInv, -1,
+                    0, 0, near * far * rangeInv * 2, 0
+                ]);
+            }
+            
+            translate(x, y, z) {
+                return new Float32Array([
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    x, y, z, 1
+                ]);
+            }
+            
+            rotateY(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                return new Float32Array([
+                    c, 0, -s, 0,
+                    0, 1, 0, 0,
+                    s, 0, c, 0,
+                    0, 0, 0, 1
+                ]);
+            }
+            
+            rotateX(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                return new Float32Array([
+                    1, 0, 0, 0,
+                    0, c, s, 0,
+                    0, -s, c, 0,
+                    0, 0, 0, 1
+                ]);
+            }
+            
+            multiplyMatrices(a, b) {
+                const result = new Float32Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        result[i * 4 + j] = 0;
+                        for (let k = 0; k < 4; k++) {
+                            result[i * 4 + j] += a[i * 4 + k] * b[k * 4 + j];
+                        }
+                    }
+                }
+                return result;
+            }
+
+            // Morph progress and animation
+            morphProgress = 1.0;
+            morphTarget = 'default';
+            morphAnimating = false;
+
+            setMorphShape(shape) {
+                if (shape === this.morphTarget) return;
+                this.morphTarget = shape;
+                this.morphAnimating = true;
+                this.morphProgress = 0.0;
+            }
+        }
+        
+        // Initialize
+        window.addEventListener('load', () => {
+            new VoiceMorph();
+        });
+    </script>
+</body>
+</html> 

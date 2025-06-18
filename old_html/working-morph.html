@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Working Voice-Modulated Morphing Character</title>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #000;
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+        }
+        
+        #mainCanvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            border-radius: 10px;
+            color: white;
+            font-family: 'Arial', sans-serif;
+            max-width: 300px;
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        .control-group button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 5px;
+        }
+        
+        .control-group button:hover {
+            background: #45a049;
+        }
+        
+        .morph-button {
+            background: #2196F3 !important;
+        }
+        
+        .morph-button:hover {
+            background: #1976D2 !important;
+        }
+        
+        .morph-button.active {
+            background: #FF5722 !important;
+        }
+        
+        #voiceStatus {
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            text-align: center;
+        }
+        
+        .status-listening {
+            background: #4CAF50;
+        }
+        
+        .status-not-listening {
+            background: #f44336;
+        }
+        
+        #voiceVisualizer {
+            width: 100%;
+            height: 60px;
+            background: #333;
+            border-radius: 5px;
+            margin-top: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .voice-bar {
+            position: absolute;
+            bottom: 0;
+            width: 4px;
+            background: #4CAF50;
+            border-radius: 2px 2px 0 0;
+            transition: height 0.1s ease;
+        }
+        
+        #debug {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 10px;
+            color: white;
+            font-family: monospace;
+            font-size: 12px;
+            max-width: 200px;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="mainCanvas"></canvas>
+    
+    <div id="controls">
+        <div class="control-group">
+            <label>Voice Control:</label>
+            <button id="startVoice">Start Voice Input</button>
+            <button id="stopVoice">Stop Voice Input</button>
+        </div>
+        
+        <div class="control-group">
+            <label>Morphing Shapes:</label>
+            <button class="morph-button active" data-shape="default">Default</button>
+            <button class="morph-button" data-shape="cat">Cat</button>
+            <button class="morph-button" data-shape="car">Car</button>
+            <button class="morph-button" data-shape="person">Person</button>
+        </div>
+        
+        <div class="control-group">
+            <label>Voice Sensitivity:</label>
+            <input type="range" id="voiceSensitivity" min="0.1" max="2.0" step="0.1" value="1.0">
+            <span id="sensitivityValue">1.0</span>
+        </div>
+        
+        <div id="voiceStatus" class="status-not-listening">
+            Voice Input: Disabled
+        </div>
+        
+        <div id="voiceVisualizer">
+            <!-- Voice bars will be generated here -->
+        </div>
+    </div>
+    
+    <div id="debug">
+        <strong>Debug Info:</strong><br>
+        <div id="debugInfo">Loading...</div>
+    </div>
+
+    <script>
+        // Simple WebGL Morphing System
+        class SimpleWebGLMorph {
+            constructor() {
+                this.canvas = null;
+                this.gl = null;
+                this.program = null;
+                this.vertexBuffer = null;
+                this.indexBuffer = null;
+                this.vertexCount = 0;
+                
+                this.voiceData = {
+                    intensity: 0,
+                    frequency: 0
+                };
+                this.currentShape = 'default';
+                this.morphProgress = 0;
+                this.targetShape = 'default';
+                this.morphSpeed = 0.02;
+                this.time = 0;
+                
+                this.init();
+            }
+            
+            init() {
+                this.setupCanvas();
+                this.setupWebGL();
+                this.createShaders();
+                this.createGeometry();
+                this.startRenderLoop();
+            }
+            
+            setupCanvas() {
+                this.canvas = document.getElementById('mainCanvas');
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                
+                window.addEventListener('resize', () => {
+                    this.canvas.width = window.innerWidth;
+                    this.canvas.height = window.innerHeight;
+                    this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+                });
+            }
+            
+            setupWebGL() {
+                this.gl = this.canvas.getContext('webgl') || this.canvas.getContext('experimental-webgl');
+                if (!this.gl) {
+                    alert('WebGL not supported!');
+                    return;
+                }
+                
+                this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+                this.gl.enable(this.gl.DEPTH_TEST);
+                this.gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            }
+            
+            createShaders() {
+                const vertexShaderSource = `
+                    attribute vec3 aPosition;
+                    attribute vec3 aNormal;
+                    
+                    uniform mat4 uModelViewMatrix;
+                    uniform mat4 uProjectionMatrix;
+                    uniform float uTime;
+                    uniform float uVoiceIntensity;
+                    uniform float uVoiceFrequency;
+                    uniform float uCurrentShape;
+                    
+                    varying vec3 vNormal;
+                    varying vec3 vPosition;
+                    
+                    vec3 applyVoiceModulation(vec3 position, float time, float intensity, float frequency) {
+                        vec3 modulated = position;
+                        
+                        // Voice intensity affects overall scale
+                        float voiceScale = 1.0 + intensity * 0.3;
+                        modulated *= voiceScale;
+                        
+                        // Voice frequency creates subtle vibration
+                        float vibration = sin(time * 50.0 + frequency * 0.01) * intensity * 0.1;
+                        modulated += normalize(position) * vibration;
+                        
+                        return modulated;
+                    }
+                    
+                    vec3 applyShapeMorphing(vec3 position) {
+                        vec3 morphed = position;
+                        
+                        if (uCurrentShape > 0.5) {
+                            // Cat shape
+                            if (uCurrentShape < 1.5) {
+                                vec3 normalized = normalize(position);
+                                float y = normalized.y;
+                                
+                                // Pointed ears
+                                if (y > 0.7) {
+                                    morphed.x *= 0.8;
+                                    morphed.z *= 0.8;
+                                    morphed.y *= 1.3;
+                                }
+                                
+                                // Elongated body
+                                if (abs(y) < 0.3) {
+                                    morphed.x *= 1.2;
+                                    morphed.z *= 1.2;
+                                }
+                                
+                                // Tail
+                                if (y < -0.7) {
+                                    morphed.x *= 0.6;
+                                    morphed.z *= 0.6;
+                                    morphed.y *= 1.5;
+                                }
+                            }
+                            // Car shape
+                            else if (uCurrentShape < 2.5) {
+                                vec3 normalized = normalize(position);
+                                float y = normalized.y;
+                                float x = normalized.x;
+                                float z = normalized.z;
+                                
+                                // Car body
+                                if (abs(y) < 0.4) {
+                                    morphed.x *= 1.8;
+                                    morphed.z *= 1.4;
+                                    morphed.y *= 0.6;
+                                }
+                                
+                                // Wheels
+                                if (abs(x) > 0.7) {
+                                    morphed.x *= 1.1;
+                                    morphed.y *= 0.8;
+                                    morphed.z *= 0.9;
+                                }
+                                
+                                // Hood and trunk
+                                if (z > 0.5) {
+                                    morphed.x *= 0.9;
+                                    morphed.y *= 0.8;
+                                    morphed.z *= 1.2;
+                                }
+                            }
+                            // Person shape
+                            else if (uCurrentShape < 3.5) {
+                                vec3 normalized = normalize(position);
+                                float y = normalized.y;
+                                float x = normalized.x;
+                                
+                                // Head
+                                if (y > 0.6) {
+                                    morphed.x *= 0.9;
+                                    morphed.z *= 0.9;
+                                    morphed.y *= 1.1;
+                                }
+                                
+                                // Torso
+                                if (abs(y) < 0.3) {
+                                    morphed.x *= 1.1;
+                                    morphed.z *= 1.0;
+                                    morphed.y *= 1.2;
+                                }
+                                
+                                // Arms
+                                if (abs(x) > 0.8 && abs(y) < 0.4) {
+                                    morphed.x *= 1.3;
+                                    morphed.y *= 0.9;
+                                    morphed.z *= 0.8;
+                                }
+                                
+                                // Legs
+                                if (y < -0.5) {
+                                    morphed.x *= 0.8;
+                                    morphed.z *= 0.8;
+                                    morphed.y *= 1.4;
+                                }
+                            }
+                        }
+                        
+                        return morphed;
+                    }
+                    
+                    void main() {
+                        vec3 voiceModulated = applyVoiceModulation(aPosition, uTime, uVoiceIntensity, uVoiceFrequency);
+                        vec3 shapeMorphed = applyShapeMorphing(voiceModulated);
+                        
+                        vPosition = shapeMorphed;
+                        vNormal = aNormal;
+                        
+                        gl_Position = uProjectionMatrix * uModelViewMatrix * vec4(shapeMorphed, 1.0);
+                    }
+                `;
+                
+                const fragmentShaderSource = `
+                    precision mediump float;
+                    
+                    varying vec3 vNormal;
+                    varying vec3 vPosition;
+                    
+                    uniform float uTime;
+                    uniform float uVoiceIntensity;
+                    uniform float uCurrentShape;
+                    
+                    void main() {
+                        vec3 normal = normalize(vNormal);
+                        vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
+                        
+                        float diffuse = max(dot(normal, lightDir), 0.0);
+                        
+                        vec3 color;
+                        if (uCurrentShape < 1.5) {
+                            // Cat - orange/yellow
+                            color = vec3(1.0, 0.6, 0.2);
+                        } else if (uCurrentShape < 2.5) {
+                            // Car - red
+                            color = vec3(0.8, 0.2, 0.2);
+                        } else if (uCurrentShape < 3.5) {
+                            // Person - blue
+                            color = vec3(0.2, 0.6, 1.0);
+                        } else {
+                            // Default - green
+                            color = vec3(0.2, 0.8, 0.4);
+                        }
+                        
+                        // Add voice-reactive glow
+                        float glow = uVoiceIntensity * 0.5;
+                        color += vec3(glow, glow * 0.5, glow * 0.2);
+                        
+                        gl_FragColor = vec4(color * (0.3 + 0.7 * diffuse), 1.0);
+                    }
+                `;
+                
+                const vertexShader = this.createShader(this.gl.VERTEX_SHADER, vertexShaderSource);
+                const fragmentShader = this.createShader(this.gl.FRAGMENT_SHADER, fragmentShaderSource);
+                
+                this.program = this.createProgram(vertexShader, fragmentShader);
+                
+                // Get uniform locations
+                this.uniforms = {
+                    modelViewMatrix: this.gl.getUniformLocation(this.program, 'uModelViewMatrix'),
+                    projectionMatrix: this.gl.getUniformLocation(this.program, 'uProjectionMatrix'),
+                    time: this.gl.getUniformLocation(this.program, 'uTime'),
+                    voiceIntensity: this.gl.getUniformLocation(this.program, 'uVoiceIntensity'),
+                    voiceFrequency: this.gl.getUniformLocation(this.program, 'uVoiceFrequency'),
+                    currentShape: this.gl.getUniformLocation(this.program, 'uCurrentShape')
+                };
+            }
+            
+            createShader(type, source) {
+                const shader = this.gl.createShader(type);
+                this.gl.shaderSource(shader, source);
+                this.gl.compileShader(shader);
+                
+                if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+                    console.error('Shader compilation error:', this.gl.getShaderInfoLog(shader));
+                    this.gl.deleteShader(shader);
+                    return null;
+                }
+                
+                return shader;
+            }
+            
+            createProgram(vertexShader, fragmentShader) {
+                const program = this.gl.createProgram();
+                this.gl.attachShader(program, vertexShader);
+                this.gl.attachShader(program, fragmentShader);
+                this.gl.linkProgram(program);
+                
+                if (!this.gl.getProgramParameter(program, this.gl.LINK_STATUS)) {
+                    console.error('Program linking error:', this.gl.getProgramInfoLog(program));
+                    this.gl.deleteProgram(program);
+                    return null;
+                }
+                
+                return program;
+            }
+            
+            createGeometry() {
+                // Create an icosahedron
+                const vertices = [];
+                const indices = [];
+                
+                // Icosahedron vertices
+                const phi = (1.0 + Math.sqrt(5.0)) / 2.0;
+                const a = 1.0;
+                const b = 1.0 / phi;
+                
+                const icosahedronVertices = [
+                    [0, b, -a], [b, a, 0], [-b, a, 0], [0, b, a], [b, -a, 0], [-b, -a, 0],
+                    [0, -b, -a], [a, 0, b], [-a, 0, b], [a, 0, -b], [-a, 0, -b], [0, -b, a]
+                ];
+                
+                // Create vertices with normals
+                for (let i = 0; i < icosahedronVertices.length; i++) {
+                    const vertex = icosahedronVertices[i];
+                    const length = Math.sqrt(vertex[0] * vertex[0] + vertex[1] * vertex[1] + vertex[2] * vertex[2]);
+                    
+                    // Position
+                    vertices.push(vertex[0] / length * 2.0);
+                    vertices.push(vertex[1] / length * 2.0);
+                    vertices.push(vertex[2] / length * 2.0);
+                    
+                    // Normal (same as position for unit sphere)
+                    vertices.push(vertex[0] / length);
+                    vertices.push(vertex[1] / length);
+                    vertices.push(vertex[2] / length);
+                }
+                
+                // Icosahedron faces
+                const icosahedronFaces = [
+                    [0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5], [0, 5, 1],
+                    [1, 5, 7], [1, 7, 2], [2, 7, 8], [2, 8, 3], [3, 8, 4],
+                    [4, 8, 9], [4, 9, 5], [5, 9, 7], [7, 9, 10], [7, 10, 8],
+                    [8, 10, 11], [8, 11, 9], [9, 11, 10], [10, 11, 6], [10, 6, 7]
+                ];
+                
+                // Create indices
+                for (let i = 0; i < icosahedronFaces.length; i++) {
+                    const face = icosahedronFaces[i];
+                    indices.push(face[0], face[1], face[2]);
+                }
+                
+                // Create vertex buffer
+                this.vertexBuffer = this.gl.createBuffer();
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.vertexBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(vertices), this.gl.STATIC_DRAW);
+                
+                // Create index buffer
+                this.indexBuffer = this.gl.createBuffer();
+                this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+                this.gl.bufferData(this.gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), this.gl.STATIC_DRAW);
+                
+                this.vertexCount = indices.length;
+                
+                // Set up attributes
+                this.gl.useProgram(this.program);
+                
+                const positionLocation = this.gl.getAttribLocation(this.program, 'aPosition');
+                const normalLocation = this.gl.getAttribLocation(this.program, 'aNormal');
+                
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.vertexBuffer);
+                this.gl.enableVertexAttribArray(positionLocation);
+                this.gl.vertexAttribPointer(positionLocation, 3, this.gl.FLOAT, false, 24, 0);
+                
+                this.gl.enableVertexAttribArray(normalLocation);
+                this.gl.vertexAttribPointer(normalLocation, 3, this.gl.FLOAT, false, 24, 12);
+            }
+            
+            startRenderLoop() {
+                const render = () => {
+                    this.time += 0.016;
+                    
+                    // Update morphing
+                    if (this.currentShape !== this.targetShape) {
+                        this.morphProgress += this.morphSpeed;
+                        if (this.morphProgress >= 1.0) {
+                            this.morphProgress = 1.0;
+                            this.currentShape = this.targetShape;
+                        }
+                    }
+                    
+                    this.render();
+                    requestAnimationFrame(render);
+                };
+                
+                render();
+            }
+            
+            render() {
+                this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
+                
+                // Set up matrices
+                const aspect = this.canvas.width / this.canvas.height;
+                const projectionMatrix = this.perspective(45 * Math.PI / 180, aspect, 0.1, 100.0);
+                
+                const modelViewMatrix = this.translate(0, 0, -8);
+                modelViewMatrix.multiply(this.rotateY(this.time * 0.5));
+                modelViewMatrix.multiply(this.rotateX(this.time * 0.3));
+                
+                // Set uniforms
+                this.gl.useProgram(this.program);
+                
+                this.gl.uniformMatrix4fv(this.uniforms.projectionMatrix, false, projectionMatrix.elements);
+                this.gl.uniformMatrix4fv(this.uniforms.modelViewMatrix, false, modelViewMatrix.elements);
+                this.gl.uniform1f(this.uniforms.time, this.time);
+                this.gl.uniform1f(this.uniforms.voiceIntensity, this.voiceData.intensity / 128);
+                this.gl.uniform1f(this.uniforms.voiceFrequency, this.voiceData.frequency);
+                this.gl.uniform1f(this.uniforms.currentShape, this.getShapeValue(this.currentShape));
+                
+                // Draw
+                this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+                this.gl.drawElements(this.gl.TRIANGLES, this.vertexCount, this.gl.UNSIGNED_SHORT, 0);
+            }
+            
+            // Matrix utilities
+            perspective(fov, aspect, near, far) {
+                const f = Math.tan(Math.PI * 0.5 - 0.5 * fov);
+                const rangeInv = 1.0 / (near - far);
+                
+                return new Matrix4([
+                    f / aspect, 0, 0, 0,
+                    0, f, 0, 0,
+                    0, 0, (near + far) * rangeInv, -1,
+                    0, 0, near * far * rangeInv * 2, 0
+                ]);
+            }
+            
+            translate(x, y, z) {
+                return new Matrix4([
+                    1, 0, 0, 0,
+                    0, 1, 0, 0,
+                    0, 0, 1, 0,
+                    x, y, z, 1
+                ]);
+            }
+            
+            rotateX(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                return new Matrix4([
+                    1, 0, 0, 0,
+                    0, c, s, 0,
+                    0, -s, c, 0,
+                    0, 0, 0, 1
+                ]);
+            }
+            
+            rotateY(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                return new Matrix4([
+                    c, 0, -s, 0,
+                    0, 1, 0, 0,
+                    s, 0, c, 0,
+                    0, 0, 0, 1
+                ]);
+            }
+            
+            getShapeValue(shape) {
+                const shapeMap = {
+                    'default': 0.0,
+                    'cat': 1.0,
+                    'car': 2.0,
+                    'person': 3.0
+                };
+                return shapeMap[shape] || 0.0;
+            }
+            
+            setVoiceData(voiceData) {
+                this.voiceData = voiceData;
+            }
+            
+            setTargetShape(shape) {
+                this.targetShape = shape;
+                this.morphProgress = 0;
+            }
+            
+            getState() {
+                return {
+                    currentShape: this.currentShape,
+                    targetShape: this.targetShape,
+                    morphProgress: this.morphProgress,
+                    voiceData: this.voiceData
+                };
+            }
+        }
+
+        // Simple Matrix4 class
+        class Matrix4 {
+            constructor(elements) {
+                this.elements = elements || new Array(16).fill(0);
+            }
+            
+            multiply(other) {
+                const result = new Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        result[i * 4 + j] = 0;
+                        for (let k = 0; k < 4; k++) {
+                            result[i * 4 + j] += this.elements[i * 4 + k] * other.elements[k * 4 + j];
+                        }
+                    }
+                }
+                this.elements = result;
+                return this;
+            }
+        }
+
+        // Voice Controller
+        class VoiceController {
+            constructor() {
+                this.audioContext = null;
+                this.analyser = null;
+                this.microphone = null;
+                this.isListening = false;
+                this.voiceSensitivity = 1.0;
+                this.frequencyData = new Uint8Array(256);
+                this.voiceBars = [];
+                
+                this.initControls();
+                this.initVoiceVisualizer();
+            }
+            
+            initControls() {
+                document.getElementById('startVoice').addEventListener('click', () => this.startVoiceInput());
+                document.getElementById('stopVoice').addEventListener('click', () => this.stopVoiceInput());
+                
+                document.querySelectorAll('.morph-button').forEach(button => {
+                    button.addEventListener('click', (e) => {
+                        this.setMorphShape(e.target.dataset.shape);
+                    });
+                });
+                
+                const sensitivitySlider = document.getElementById('voiceSensitivity');
+                const sensitivityValue = document.getElementById('sensitivityValue');
+                
+                sensitivitySlider.addEventListener('input', (e) => {
+                    this.voiceSensitivity = parseFloat(e.target.value);
+                    sensitivityValue.textContent = e.target.value;
+                });
+            }
+            
+            initVoiceVisualizer() {
+                const visualizer = document.getElementById('voiceVisualizer');
+                
+                for (let i = 0; i < 32; i++) {
+                    const bar = document.createElement('div');
+                    bar.className = 'voice-bar';
+                    bar.style.left = (i * 8) + 'px';
+                    bar.style.height = '0px';
+                    visualizer.appendChild(bar);
+                    this.voiceBars.push(bar);
+                }
+            }
+            
+            async startVoiceInput() {
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    
+                    this.microphone = this.audioContext.createMediaStreamSource(stream);
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.analyser.fftSize = 512;
+                    this.analyser.smoothingTimeConstant = 0.8;
+                    
+                    this.microphone.connect(this.analyser);
+                    
+                    this.isListening = true;
+                    this.updateVoiceStatus();
+                    this.startAnalysis();
+                    
+                } catch (error) {
+                    console.error('Error accessing microphone:', error);
+                    alert('Could not access microphone. Please check permissions.');
+                }
+            }
+            
+            stopVoiceInput() {
+                if (this.microphone && this.microphone.mediaStream) {
+                    this.microphone.mediaStream.getTracks().forEach(track => track.stop());
+                }
+                
+                this.isListening = false;
+                this.updateVoiceStatus();
+                
+                this.voiceBars.forEach(bar => {
+                    bar.style.height = '0px';
+                });
+            }
+            
+            updateVoiceStatus() {
+                const statusElement = document.getElementById('voiceStatus');
+                if (this.isListening) {
+                    statusElement.textContent = 'Voice Input: Active';
+                    statusElement.className = 'status-listening';
+                } else {
+                    statusElement.textContent = 'Voice Input: Disabled';
+                    statusElement.className = 'status-not-listening';
+                }
+            }
+            
+            startAnalysis() {
+                const analyze = () => {
+                    if (!this.isListening) return;
+                    
+                    this.analyser.getByteFrequencyData(this.frequencyData);
+                    
+                    const averageIntensity = this.calculateAverageIntensity();
+                    const dominantFrequency = this.calculateDominantFrequency();
+                    
+                    this.updateVoiceVisualizer();
+                    
+                    if (window.simpleWebGLMorph) {
+                        window.simpleWebGLMorph.setVoiceData({
+                            intensity: averageIntensity,
+                            frequency: dominantFrequency
+                        });
+                    }
+                    
+                    requestAnimationFrame(analyze);
+                };
+                
+                analyze();
+            }
+            
+            updateVoiceVisualizer() {
+                for (let i = 0; i < this.voiceBars.length; i++) {
+                    const dataIndex = Math.floor(i * this.frequencyData.length / this.voiceBars.length);
+                    const value = this.frequencyData[dataIndex] || 0;
+                    const height = (value / 255) * 60;
+                    
+                    this.voiceBars[i].style.height = height + 'px';
+                    
+                    const intensity = value / 255;
+                    if (intensity > 0.7) {
+                        this.voiceBars[i].style.background = '#FF5722';
+                    } else if (intensity > 0.4) {
+                        this.voiceBars[i].style.background = '#FFC107';
+                    } else {
+                        this.voiceBars[i].style.background = '#4CAF50';
+                    }
+                }
+            }
+            
+            calculateAverageIntensity() {
+                let sum = 0;
+                for (let i = 0; i < this.frequencyData.length; i++) {
+                    sum += this.frequencyData[i];
+                }
+                return (sum / this.frequencyData.length) * this.voiceSensitivity;
+            }
+            
+            calculateDominantFrequency() {
+                let maxIndex = 0;
+                let maxValue = 0;
+                
+                for (let i = 0; i < this.frequencyData.length; i++) {
+                    if (this.frequencyData[i] > maxValue) {
+                        maxValue = this.frequencyData[i];
+                        maxIndex = i;
+                    }
+                }
+                
+                return maxIndex * (this.audioContext.sampleRate / (this.analyser.fftSize * 2));
+            }
+            
+            setMorphShape(shape) {
+                document.querySelectorAll('.morph-button').forEach(button => {
+                    button.classList.remove('active');
+                });
+                document.querySelector(`[data-shape="${shape}"]`).classList.add('active');
+                
+                if (window.simpleWebGLMorph) {
+                    window.simpleWebGLMorph.setTargetShape(shape);
+                }
+            }
+        }
+
+        // Debug information display
+        function updateDebugInfo() {
+            const debugInfo = document.getElementById('debugInfo');
+            if (debugInfo) {
+                let info = '';
+                
+                if (window.simpleWebGLMorph) {
+                    const morph = window.simpleWebGLMorph;
+                    info += `Shape: ${morph.currentShape}<br>`;
+                    info += `Target: ${morph.targetShape}<br>`;
+                    info += `Progress: ${Math.round(morph.morphProgress * 100)}%<br>`;
+                    info += `Intensity: ${Math.round(morph.voiceData.intensity)}<br>`;
+                    info += `Freq: ${Math.round(morph.voiceData.frequency)}<br>`;
+                }
+                
+                debugInfo.innerHTML = info || 'Loading...';
+            }
+        }
+
+        // Initialize everything
+        window.addEventListener('load', () => {
+            window.simpleWebGLMorph = new SimpleWebGLMorph();
+            window.voiceController = new VoiceController();
+            
+            setInterval(updateDebugInfo, 100);
+            
+            console.log('Voice-Modulated Morphing System initialized!');
+        });
+    </script>
+
+</body>
+</html> 
